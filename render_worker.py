@@ -51,11 +51,42 @@ _LAST_JOB = {"status": "idle"}
 
 def _get_drive_service():
     from google.oauth2 import service_account
+    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
+    # 1. Prioritaskan OAuth2 User Token (memakai kuota Google Drive pribadi, bebas storageQuotaExceeded)
+    oauth_json = os.environ.get("GOOGLE_OAUTH_TOKEN_JSON", "").strip()
+    refresh_token = os.environ.get("GOOGLE_OAUTH_REFRESH_TOKEN", "").strip()
+    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+
+    if oauth_json:
+        info = json.loads(oauth_json)
+        creds = Credentials(
+            token=info.get("token"),
+            refresh_token=info.get("refresh_token"),
+            token_uri=info.get("token_uri", "https://oauth2.googleapis.com/token"),
+            client_id=info.get("client_id") or client_id,
+            client_secret=info.get("client_secret") or client_secret,
+            scopes=["https://www.googleapis.com/auth/drive"],
+        )
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+    if refresh_token and client_id and client_secret:
+        creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=client_id,
+            client_secret=client_secret,
+            scopes=["https://www.googleapis.com/auth/drive"],
+        )
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+    # 2. Fallback: Service Account (hanya bisa upload ke Shared Drive, bukan My Drive pribadi)
     sa_raw = (os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON") or os.environ.get("GOOGLE_CREDENTIALS") or "").strip()
     if not sa_raw:
-        raise RuntimeError("Env var GOOGLE_SERVICE_ACCOUNT_JSON / GOOGLE_CREDENTIALS belum diatur di Render.")
+        raise RuntimeError("Env var GOOGLE_OAUTH_REFRESH_TOKEN atau GOOGLE_SERVICE_ACCOUNT_JSON belum diatur di Render.")
     creds = service_account.Credentials.from_service_account_info(
         json.loads(sa_raw),
         scopes=["https://www.googleapis.com/auth/drive"],
