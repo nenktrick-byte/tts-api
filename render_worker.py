@@ -48,7 +48,11 @@ def extract_drive_id(url):
 
 def download_drive_or_http(url, out_path):
     fid = extract_drive_id(url)
-    dl_url = f"https://drive.google.com/uc?export=download&id={fid}" if (fid and "drive.google.com" in str(url)) else url
+    url_str = str(url or "")
+    if fid and ("drive.google.com" in url_str or "drive.usercontent.google.com" in url_str):
+        dl_url = f"https://drive.usercontent.google.com/download?id={fid}&export=download&confirm=t"
+    else:
+        dl_url = url
     with requests.get(dl_url, stream=True, timeout=60, allow_redirects=True) as r:
         r.raise_for_status()
         with open(out_path, "wb") as f:
@@ -280,6 +284,18 @@ def upload_to_drive_service_account(local_path, file_name, folder_id):
     return created.get("webViewLink") or f"https://drive.google.com/file/d/{created['id']}/view?usp=drivesdk"
 
 
+def _post_callback(callback_url, status, row_num, timeout=30, **extra):
+    if not callback_url:
+        return
+    body = {
+        "status": status,
+        "row_num": row_num,
+        "secret": os.environ.get("RENDERER_API_KEY", ""),
+        **extra,
+    }
+    requests.post(callback_url, json=body, timeout=timeout)
+
+
 def _background_render_pipeline(payload):
     work_dir = tempfile.mkdtemp(prefix="prop_render_")
     callback_url = payload.get("callback_url")
@@ -287,32 +303,37 @@ def _background_render_pipeline(payload):
     try:
         out_mp4, out_name = render_job_to_mp4_low_ram(payload, work_dir)
         video_url = upload_to_drive_service_account(out_mp4, out_name, payload.get("drive_folder_id"))
-        if callback_url:
-            requests.post(
-                callback_url,
-                json={
-                    "status": "VIDEO_READY",
-                    "row_num": row_num,
-                    "video_url": video_url,
-                    "secret": os.environ.get("RENDERER_API_KEY", ""),
-                },
-                timeout=30,
-            )
+        _post_callback(callback_url, "VIDEO_READY", row_num, timeout=30, video_url=video_url)
     except Exception as e:
-        if callback_url:
-            try:
-                requests.post(
-                    callback_url,
-                    json={
-                        "status": "ERROR",
-                        "row_num": row_num,
-                        "error": str(e),
-                        "secret": os.environ.get("RENDERER_API_KEY", ""),
-                    },
-                    timeout=20,
-                )
-            except Exception:
-                pass
+        try:
+            _post_callback(callback_url, "ERROR", row_num, timeout=20, error=str(e))
+        except Exception:
+            pass
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        gc.collect()
+
+
+def _merge_drive_parts_job(part_ids, output_filename, target_folder_id, callback_url, row_num):
+    work_dir = tempfile.mkdtemp(prefix="merge_mp4_")
+    safe_name = os.path.basename(output_filename or "VIDEO_PROPERTY_1947_V4_HYBRID_LUXURY_HD.mp4")
+    out_path = os.path.join(work_dir, safe_name)
+    try:
+        with open(out_path, "wb") as out_f:
+            for idx, fid in enumerate(part_ids):
+                part_path = os.path.join(work_dir, f"part_{idx:02d}.bin")
+                download_drive_or_http(f"https://drive.google.com/uc?export=download&id={fid}", part_path)
+                with open(part_path, "rb") as pf:
+                    shutil.copyfileobj(pf, out_f, length=1024 * 1024)
+                os.remove(part_path)
+
+        video_url = upload_to_drive_service_account(out_path, safe_name, target_folder_id)
+        _post_callback(callback_url, "VIDEO_READY", row_num, timeout=30, video_url=video_url)
+    except Exception as e:
+        try:
+            _post_callback(callback_url, "ERROR", row_num, timeout=20, error=str(e))
+        except Exception:
+            pass
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
         gc.collect()
@@ -329,7 +350,7 @@ def _is_authorized(auth_header):
 
 
 def register_render_routes(app):
-    """Otomatis mendeteksi FastAPI atau Flask dan mendaftarkan POST /render-property-video."""
+    """Otomatis mendeteksi FastAPI atau Flask dan mendaftarkan route render & merge."""
     app_type = type(app).__name__.lower()
     if "fastapi" in app_type:
         from fastapi import Request
@@ -343,6 +364,27 @@ def register_render_routes(app):
             job_id = uuid.uuid4().hex[:10]
             threading.Thread(target=_background_render_pipeline, args=(payload,), daemon=True).start()
             return JSONResponse(status_code=202, content={"status": "accepted", "job_id": job_id})
+
+        @app.post("/merge-drive-parts")
+        async def merge_drive_parts_endpoint(request: Request):
+            if not _is_authorized(request.headers.get("authorization")):
+                return JSONResponse(status_code=401, content={"status": "error", "message": "Unauthorized"})
+            payload = await request.json()
+            part_ids = payload.get("part_ids", [])
+            output_filename = payload.get("output_filename", "VIDEO_PROPERTY_1947_V4_HYBRID_LUXURY_HD.mp4")
+            target_folder_id = payload.get("target_folder_id", "13dsLrLyOhC3pw0YXHbIMxgdBL5Y6-4lM")
+            callback_url = payload.get("callback_url")
+            row_num = payload.get("row_num")
+
+            if not part_ids:
+                return JSONResponse(status_code=400, content={"status": "error", "message": "part_ids kosong"})
+
+            threading.Thread(
+                target=_merge_drive_parts_job,
+                args=(part_ids, output_filename, target_folder_id, callback_url, row_num),
+                daemon=True,
+            ).start()
+            return JSONResponse(status_code=202, content={"status": "accepted", "output_filename": output_filename})
     else:
         from flask import request, jsonify
 
