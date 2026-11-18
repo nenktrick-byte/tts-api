@@ -259,9 +259,9 @@ def upload_to_drive_service_account(local_path, file_name, folder_id):
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
 
-    sa_raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+    sa_raw = (os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON") or os.environ.get("GOOGLE_CREDENTIALS") or "").strip()
     if not sa_raw:
-        raise RuntimeError("Env var GOOGLE_SERVICE_ACCOUNT_JSON belum diatur di Render.")
+        raise RuntimeError("Env var GOOGLE_SERVICE_ACCOUNT_JSON / GOOGLE_CREDENTIALS belum diatur di Render.")
     creds = service_account.Credentials.from_service_account_info(
         json.loads(sa_raw),
         scopes=["https://www.googleapis.com/auth/drive"],
