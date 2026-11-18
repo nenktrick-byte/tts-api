@@ -1,5 +1,10 @@
 fastapi
 uvicorn
 edge-tts
-google-api-python-client
-google-auth
+google-api-python-client>=2.100.0
+google-auth>=2.23.0
+imageio-ffmpeg>=0.4.9
+pillow>=10.0.0
+opencv-python-headless>=4.8.0
+numpy>=1.24.0
+requests>=2.31.0

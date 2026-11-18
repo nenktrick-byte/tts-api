@@ -6,7 +6,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import edge_tts
 
+from render_worker import register_render_routes
+
 app = FastAPI()
+register_render_routes(app)
 
 class Artikel(BaseModel):
     teks_fatwa: str
